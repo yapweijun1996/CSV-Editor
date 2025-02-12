@@ -33,30 +33,6 @@ This repository contains a web-based CSV editor built with HTML, CSS, and JavaSc
 _You can view a live demo of this project [here](#)._  
 *(Replace `#` with the actual demo URL.)*
 
-## Installation
-
-To run the CSV editor locally:
-
-1. **Clone the repository:**
-   
-bash
-   git clone https://github.com/yourusername/enhanced-csv-editor.git
-   
-
-Copy
-
-
-2. **Navigate to the project directory:**
-   
-bash
-   cd enhanced-csv-editor
-   
-
-Copy
-
-
-3. **Open `index.html` in your web browser.**
-
 
 
 ## Usage
