@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>Enhanced CSV Editor with Sorting</title>
+		<style>
+			body { font-family: Arial, sans-serif; margin: 20px; }
+			table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+			th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+			th { background-color: #f0f0f0; white-space: nowrap;}
+			button { margin: 5px; }
+			.deleteBtn { background-color: #e74c3c; color: #fff; border: none; padding: 5px 10px; cursor: pointer; }
+			.remove-col-btn { background-color: #888; color: #fff; border: none; padding: 2px 4px; cursor: pointer; font-size: 0.8em; margin-left: 5px; }
+			tr.draggable { cursor: move; }
+			.drag-over-top { border-top: 2px solid blue; }
+			.drag-over-bottom { border-bottom: 2px solid blue; }
+		</style>
+	</head>
+	<body>
+		<h1>Enhanced CSV Editor with Sorting</h1>
+		<input type="file" id="csvFileInput" accept=".csv">
+		<button id="saveButton">Save CSV</button>
+		<button id="addRowButton">Add Row</button>
+		<button id="addColumnButton">Add Column</button>
+		<button id="undoButton">Undo</button>
+		<button id="redoButton">Redo</button>
+		<label for="searchInput">Search:</label>
+		<input type="text" id="searchInput" placeholder="Type to filter...">
+		<div id="csvContainer"></div>
+		
+		<script>
+			let undoStack = [];
+			let redoStack = [];
+			let sortOrders = {}; // stores sort order per column (asc/desc)
+			
+			function getTableState() {
+				return document.getElementById("csvContainer").innerHTML;
+			}
+			function setTableState(state) {
+				document.getElementById("csvContainer").innerHTML = state;
+				rebindAll();
+			}
+			function saveState() {
+				undoStack.push(getTableState());
+				redoStack = [];
+			}
+			
+			function rebindAll() {
+				attachCellListeners();
+				attachDragAndDrop();
+				attachHeaderSort();
+			}
+			
+			function attachCellListeners() {
+				let table = document.getElementById("csvTable");
+				if (table) {
+					table.querySelectorAll("td, th").forEach(cell => {
+						cell.oninput = function() { saveState(); };
+					});
+				}
+			}
+			
+			// Attach double-click event to header cells (except the action cell)
+			function attachHeaderSort() {
+				let table = document.getElementById("csvTable");
+				if (!table || table.rows.length === 0) return;
+				let headerCells = table.rows[0].cells;
+				for (let i = 0; i < headerCells.length - 1; i++) {
+					headerCells[i].ondblclick = function(e) {
+						// prevent sort if double-click occurred on a button (e.g., remove button)
+						if(e.target.tagName === "BUTTON") return;
+						sortTableByColumn(i);
+					}
+				}
+			}
+			
+			// Enhanced drag-and-drop with visual feedback
+			function attachDragAndDrop() {
+				let table = document.getElementById("csvTable");
+				if (!table) return;
+				for (let i = 1; i < table.rows.length; i++) {
+					let row = table.rows[i];
+					row.setAttribute("draggable", "true");
+					row.addEventListener("dragstart", dragStart);
+					row.addEventListener("dragover", dragOver);
+					row.addEventListener("dragenter", dragEnter);
+					row.addEventListener("dragleave", dragLeave);
+					row.addEventListener("drop", dropRow);
+				}
+			}
+			
+			let dragSrcEl = null;
+			function dragStart(e) {
+				dragSrcEl = this;
+				e.dataTransfer.effectAllowed = "move";
+			}
+			function dragEnter(e) { }
+			function dragOver(e) {
+				e.preventDefault();
+				let bounding = this.getBoundingClientRect();
+				let offset = e.clientY - bounding.top;
+				this.classList.remove("drag-over-top", "drag-over-bottom");
+				if (offset < bounding.height / 2) {
+					this.classList.add("drag-over-top");
+				} else {
+					this.classList.add("drag-over-bottom");
+				}
+				e.dataTransfer.dropEffect = "move";
+				return false;
+			}
+			function dragLeave(e) {
+				this.classList.remove("drag-over-top", "drag-over-bottom");
+			}
+			function dropRow(e) {
+				e.stopPropagation();
+				this.classList.remove("drag-over-top", "drag-over-bottom");
+				if (dragSrcEl !== this) {
+					let targetRect = this.getBoundingClientRect();
+					let offset = e.clientY - targetRect.top;
+					let insertBefore = offset < targetRect.height / 2;
+					this.parentNode.insertBefore(dragSrcEl, insertBefore ? this : this.nextSibling);
+					saveState();
+				}
+				return false;
+			}
+			
+			// CSV parser that supports quoted fields
+			function parseCSV(text) {
+				let arr = [];
+				let row = [];
+				let cur = "";
+				let insideQuotes = false;
+				for (let i = 0; i < text.length; i++) {
+					let char = text[i];
+					if (insideQuotes) {
+						if (char === '"') {
+							if (i + 1 < text.length && text[i + 1] === '"') {
+								cur += '"';
+								i++;
+							} else {
+								insideQuotes = false;
+							}
+						} else {
+							cur += char;
+						}
+					} else {
+						if (char === '"') {
+							insideQuotes = true;
+						} else if (char === ',') {
+							row.push(cur);
+							cur = "";
+						} else if (char === "\r") {
+							if (i + 1 < text.length && text[i + 1] === "\n") { i++; }
+							row.push(cur);
+							arr.push(row);
+							row = [];
+							cur = "";
+						} else if (char === "\n") {
+							row.push(cur);
+							arr.push(row);
+							row = [];
+							cur = "";
+						} else {
+							cur += char;
+						}
+					}
+				}
+				row.push(cur);
+				arr.push(row);
+				return arr;
+			}
+			
+			// Normalizes CSV data based on header column count
+			function normalizeCSVData(data) {
+				if (data.length === 0) return data;
+				while (data[0].length && data[0][data[0].length - 1] === "") {
+					data[0].pop();
+				}
+				const headerLength = data[0].length;
+				data = data.map(row => {
+					while (row.length > headerLength && row[row.length - 1] === "") {
+						row.pop();
+					}
+					while (row.length < headerLength) { row.push(""); }
+					return row;
+				});
+				return data;
+			}
+			
+			// Render CSV data into an editable table
+			function renderCSV(data) {
+				const table = document.createElement("table");
+				table.id = "csvTable";
+				data.forEach((rowData, rowIndex) => {
+					const row = document.createElement("tr");
+					rowData.forEach((cellData, cellIndex) => {
+						let cell;
+						if (rowIndex === 0) {
+							cell = document.createElement("th");
+							cell.contentEditable = "true";
+							cell.innerText = cellData;
+							if (data[0].length > 1) {
+								const removeBtn = document.createElement("button");
+								removeBtn.innerText = "DEL";
+								removeBtn.className = "remove-col-btn";
+								cell.appendChild(removeBtn);
+							}
+						} else {
+							cell = document.createElement("td");
+							cell.contentEditable = "true";
+							cell.innerText = cellData;
+						}
+						row.appendChild(cell);
+					});
+					const actionCell = document.createElement("td");
+					if (rowIndex === 0) {
+						actionCell.innerText = "Header";
+					} else {
+						const delBtn = document.createElement("button");
+						delBtn.innerText = "Delete";
+						delBtn.className = "deleteBtn";
+						delBtn.onclick = function() { row.remove(); saveState(); };
+						actionCell.appendChild(delBtn);
+					}
+					row.appendChild(actionCell);
+					table.appendChild(row);
+				});
+				document.getElementById("csvContainer").innerHTML = "";
+				document.getElementById("csvContainer").appendChild(table);
+				rebindAll();
+				saveState();
+			}
+			
+			function exportCSV() {
+				const table = document.getElementById("csvTable");
+				if (!table) return "";
+				let csv = [];
+				for (let i = 0; i < table.rows.length; i++) {
+					let row = [];
+					for (let j = 0; j < table.rows[i].cells.length - 1; j++) {
+						let cellText = table.rows[i].cells[j].innerText;
+						if (cellText.includes(",") || cellText.includes("\n")) {
+							cellText = '"' + cellText.replace(/"/g, '""') + '"';
+						}
+						row.push(cellText);
+					}
+					csv.push(row.join(","));
+				}
+				return csv.join("\n");
+			}
+			
+			document.getElementById("csvFileInput").addEventListener("change", function(e) {
+				const file = e.target.files[0];
+				if (!file) return;
+				const reader = new FileReader();
+				reader.onload = function(e) {
+					const text = e.target.result;
+					let data = parseCSV(text);
+					data = normalizeCSVData(data);
+					renderCSV(data);
+					saveState();
+				};
+				reader.readAsText(file);
+			});
+			
+			document.getElementById("saveButton").addEventListener("click", function() {
+				const csvContent = exportCSV();
+				if (!csvContent) { alert("No CSV data to export."); return; }
+				const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+				const url = URL.createObjectURL(blob);
+				const a = document.createElement("a");
+				a.href = url;
+				a.download = "edited.csv";
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+			});
+			
+			document.getElementById("addRowButton").addEventListener("click", function() {
+				const table = document.getElementById("csvTable");
+				if (!table) { alert("Please upload a CSV first."); return; }
+				const header = table.rows[0];
+				const cols = header.cells.length - 1;
+				const row = document.createElement("tr");
+				for (let i = 0; i < cols; i++) {
+					const cell = document.createElement("td");
+					cell.contentEditable = "true";
+					cell.innerText = "";
+					row.appendChild(cell);
+				}
+				const actionCell = document.createElement("td");
+				const delBtn = document.createElement("button");
+				delBtn.innerText = "Delete";
+				delBtn.className = "deleteBtn";
+				delBtn.onclick = function() { row.remove(); saveState(); };
+				actionCell.appendChild(delBtn);
+				row.appendChild(actionCell);
+				table.appendChild(row);
+				attachDragAndDrop();
+				saveState();
+			});
+			
+			document.getElementById("addColumnButton").addEventListener("click", function() {
+				const table = document.getElementById("csvTable");
+				if (!table) { alert("Please upload a CSV first."); return; }
+				let header = table.rows[0];
+				const newHeader = document.createElement("th");
+				newHeader.contentEditable = "true";
+				newHeader.innerText = "New Column";
+				const removeBtn = document.createElement("button");
+				removeBtn.innerText = "x";
+				removeBtn.className = "remove-col-btn";
+				newHeader.appendChild(removeBtn);
+				header.insertBefore(newHeader, header.lastElementChild);
+				for (let i = 1; i < table.rows.length; i++) {
+					const row = table.rows[i];
+					const newCell = document.createElement("td");
+					newCell.contentEditable = "true";
+					newCell.innerText = "";
+					row.insertBefore(newCell, row.lastElementChild);
+				}
+				saveState();
+			});
+			
+			function removeColumn(colIndex) {
+				const table = document.getElementById("csvTable");
+				if (!table) return;
+				if (table.rows[0].cells.length - 1 <= 1) {
+					alert("Cannot remove the only column.");
+					return;
+				}
+				for (let i = 0; i < table.rows.length; i++) {
+					table.rows[i].deleteCell(colIndex);
+				}
+				saveState();
+			}
+			
+			document.getElementById("undoButton").addEventListener("click", function() {
+				if (undoStack.length > 1) {
+					let state = undoStack.pop();
+					redoStack.push(state);
+					let prevState = undoStack[undoStack.length - 1];
+					setTableState(prevState);
+				}
+			});
+			
+			document.getElementById("redoButton").addEventListener("click", function() {
+				if (redoStack.length > 0) {
+					let state = redoStack.pop();
+					setTableState(state);
+					undoStack.push(state);
+				}
+			});
+			
+			document.getElementById("searchInput").addEventListener("input", function() {
+				const query = this.value.toLowerCase();
+				const table = document.getElementById("csvTable");
+				if (!table) return;
+				for (let i = 1; i < table.rows.length; i++) {
+					let row = table.rows[i];
+					let text = row.innerText.toLowerCase();
+					row.style.display = text.indexOf(query) !== -1 ? "" : "none";
+				}
+			});
+			
+			document.getElementById("csvContainer").addEventListener("click", function(e) {
+				if(e.target && e.target.classList.contains("remove-col-btn")){
+					e.stopPropagation();
+					let cellIndex = e.target.parentNode.cellIndex;
+					removeColumn(cellIndex);
+				}
+			});
+			
+			// Sort table rows by the specified column (excluding header row)
+			function sortTableByColumn(colIndex) {
+				let table = document.getElementById("csvTable");
+				if (!table || table.rows.length <= 1) return;
+				if (colIndex === table.rows[0].cells.length - 1) return; // skip action column
+				// Toggle sort order
+				if (!sortOrders.hasOwnProperty(colIndex) || sortOrders[colIndex] === "desc") {
+					sortOrders[colIndex] = "asc";
+				} else {
+					sortOrders[colIndex] = "desc";
+				}
+				const rowsArray = Array.from(table.rows).slice(1);
+				rowsArray.sort((rowA, rowB) => {
+					let cellA = rowA.cells[colIndex].innerText;
+					let cellB = rowB.cells[colIndex].innerText;
+					let numA = parseFloat(cellA);
+					let numB = parseFloat(cellB);
+					if(!isNaN(numA) && !isNaN(numB)) {
+						return sortOrders[colIndex] === "asc" ? numA - numB : numB - numA;
+					} else {
+						return sortOrders[colIndex] === "asc" ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+					}
+				});
+				// Remove old rows and append sorted rows
+				for (let i = table.rows.length - 1; i > 0; i--) {
+					table.deleteRow(i);
+				}
+				rowsArray.forEach(row => {
+					table.appendChild(row);
+				});
+				saveState();
+			}
+		</script>
+	</body>
+</html>
